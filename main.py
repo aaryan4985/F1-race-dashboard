@@ -1,54 +1,61 @@
 from src.f1_data import get_race_telemetry, get_driver_colors, load_race_session
 from src.arcade_replay import run_arcade_replay
-import sys
+import argparse
 
-def main(year=None, round_number=None, playback_speed=1):
 
-  session = load_race_session(year, round_number)
-  print(f"Loaded session: {session.event['EventName']} - {session.event['RoundNumber']}")
+def main(year: int, round_number: int, playback_speed: float = 1.0) -> None:
+    # Load the race session
+    session = load_race_session(year, round_number)
+    print(f"Loaded session: {session.event['EventName']} - Round {session.event['RoundNumber']} ({year})")
 
-  # Get the drivers who participated in the race
+    # Get telemetry for the full race
+    race_telemetry = get_race_telemetry(session)
 
-  race_telemetry = get_race_telemetry(session)
+    # Use the fastest lap as an example for the track layout
+    example_lap = session.laps.pick_fastest().get_telemetry()
 
-  # Get example lap for track layout
+    # Get driver list and colors
+    drivers = session.drivers
+    driver_colors = get_driver_colors(session)
 
-  example_lap = session.laps.pick_fastest().get_telemetry()
+    # Run the arcade replay
+    run_arcade_replay(
+        frames=race_telemetry,
+        example_lap=example_lap,
+        drivers=drivers,
+        playback_speed=playback_speed,
+        driver_colors=driver_colors,
+        title=f"{session.event['EventName']} - Race"
+    )
 
-  drivers = session.drivers
-
-  driver_codes = {
-    num: session.get_driver(num)["Abbreviation"]
-    for num in drivers
-  } 
-
-  driver_colors = get_driver_colors(session)
-
-  run_arcade_replay(
-    frames=race_telemetry,
-    example_lap=example_lap,
-    drivers=drivers,
-    playback_speed=1.0,
-    driver_colors=driver_colors,
-    title=f"{session.event['EventName']} - Race"
-  )
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="F1 Race Replay")
 
-  # Get the year and round number from user input
+    parser.add_argument(
+        "--year",
+        type=int,
+        help="F1 season year (e.g. 2024). If omitted, you will be prompted."
+    )
+    parser.add_argument(
+        "--round",
+        type=int,
+        help="Round number within the season (1 = first race). If omitted, you will be prompted."
+    )
+    parser.add_argument(
+        "--speed",
+        type=float,
+        default=1.0,
+        help="Playback speed multiplier (default: 1.0)"
+    )
 
-  if "--year" in sys.argv:
-    year_index = sys.argv.index("--year") + 1
-    year = int(sys.argv[year_index])
-  else:
-    year = 2025  # Default year
+    args = parser.parse_args()
 
-  if "--round" in sys.argv:
-    round_index = sys.argv.index("--round") + 1
-    round_number = int(sys.argv[round_index])
-  else:
-    round_number = 12  # Default round number
+    # 🟦 Ask interactively if not provided in CLI
+    if args.year is None:
+        args.year = int(input("Enter F1 season year (e.g. 2024): "))
 
-  playback_speed = 1
+    if args.round is None:
+        args.round = int(input("Enter race round (1 = first race of season): "))
 
-  main(year, round_number, playback_speed)
+    main(args.year, args.round, args.speed)
