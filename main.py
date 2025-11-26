@@ -1,3 +1,5 @@
+# File: main.py
+
 from src.f1_data import get_race_telemetry, get_driver_colors, load_race_session
 from src.arcade_replay import run_arcade_replay
 import argparse
@@ -51,7 +53,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # 🟦 Ask interactively if not provided in CLI
+    # Ask interactively if not provided in CLI
     if args.year is None:
         args.year = int(input("Enter F1 season year (e.g. 2024): "))
 

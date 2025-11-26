@@ -1,3 +1,5 @@
+# File: src/arcade_replay.py
+
 import os
 import arcade
 import numpy as np
@@ -66,6 +68,12 @@ class F1ReplayWindow(arcade.Window):
         self.frame_index = 0
         self.paused = False
 
+        # Music state
+        self.music_sound = None
+        self.music_player = None
+        self.music_muted = False
+        self.music_volume = 0.5  # default volume
+
         # Build track geometry (world coordinates)
         (
             self.plot_x_ref,
@@ -96,6 +104,15 @@ class F1ReplayWindow(arcade.Window):
         # Optional background image
         bg_path = os.path.join("resources", "background.png")
         self.bg_texture = arcade.load_texture(bg_path) if os.path.exists(bg_path) else None
+
+        # 🎵 Background music (looping)
+        music_path = os.path.join("resources", "lose_my_mind.mp3")
+        if os.path.exists(music_path):
+            try:
+                self.music_sound = arcade.Sound(music_path, streaming=True)
+                self.music_player = self.music_sound.play(volume=self.music_volume, loop=True)
+            except Exception as e:
+                print("Failed to play background music:", e)
 
         # Fallback background color
         arcade.set_background_color(arcade.color.BLACK)
@@ -242,7 +259,7 @@ class F1ReplayWindow(arcade.Window):
 
         # --- UI ELEMENTS (HUD, Leaderboard, Controls, Timeline) ---
 
-        # Leader info
+        # Leader info (correct logic: lap, then distance)
         leader_code = max(
             frame["drivers"],
             key=lambda c: (
@@ -317,8 +334,14 @@ class F1ReplayWindow(arcade.Window):
             color = self.driver_colors.get(code, arcade.color.WHITE)
             driver_list.append((code, color, pos))
 
-        # Sort by distance (leader first)
-        driver_list.sort(key=lambda x: x[2].get("dist", 999), reverse=True)
+        # Sort by (lap, dist) so final order is correct
+        driver_list.sort(
+            key=lambda x: (
+                x[2].get("lap", 1),
+                x[2].get("dist", 0),
+            ),
+            reverse=True,
+        )
 
         row_y = panel_y + panel_height / 2 - 60
         row_height = 22
@@ -339,10 +362,10 @@ class F1ReplayWindow(arcade.Window):
             )
 
         # === CONTROLS LEGEND (Bottom-left panel) ===
-        legend_width = 320
-        legend_height = 110
+        legend_width = 360
+        legend_height = 130
         legend_x = 20 + legend_width / 2
-        legend_y = 60
+        legend_y = 70
 
         arcade.draw_lrbt_rectangle_filled(
             left=legend_x - legend_width / 2,
@@ -358,6 +381,7 @@ class F1ReplayWindow(arcade.Window):
             "[←/→]    Step backward / forward",
             "[↑/↓]    Adjust speed",
             "[1-4]    0.5x / 1x / 2x / 4x",
+            "[M]      Mute / Unmute music",
         ]
 
         for i, line in enumerate(legend_lines):
@@ -402,6 +426,36 @@ class F1ReplayWindow(arcade.Window):
             self.playback_speed = 2.0
         elif symbol == arcade.key.KEY_4:
             self.playback_speed = 4.0
+        elif symbol == arcade.key.M:
+            # Toggle mute/unmute music
+            if self.music_sound is not None:
+                if not self.music_muted:
+                    # Mute: pause player if exists
+                    if self.music_player:
+                        try:
+                            self.music_player.pause()
+                        except Exception:
+                            pass
+                    self.music_muted = True
+                else:
+                    # Unmute: restart playback (looping)
+                    try:
+                        self.music_player = self.music_sound.play(
+                            volume=self.music_volume,
+                            loop=True
+                        )
+                        self.music_muted = False
+                    except Exception as e:
+                        print("Failed to resume music:", e)
+
+    def on_close(self):
+        # Stop music cleanly when window closes
+        if self.music_player:
+            try:
+                self.music_player.pause()
+            except Exception:
+                pass
+        super().on_close()
 
 
 def run_arcade_replay(frames, example_lap, drivers, title,
