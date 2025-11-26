@@ -20,6 +20,15 @@ def main(year: int, round_number: int, playback_speed: float = 1.0) -> None:
     drivers = session.drivers
     driver_colors = get_driver_colors(session)
 
+    # ✅ Get official final order from FastF1 results (so winner always stays P1)
+    final_order = []
+    try:
+        if session.results is not None:
+            # This should be e.g. ["VER", "OCO", "GAS", ...]
+            final_order = session.results["Abbreviation"].tolist()
+    except Exception as e:
+        print("Could not read official classification from session.results:", e)
+
     # Run the arcade replay
     run_arcade_replay(
         frames=race_telemetry,
@@ -27,7 +36,8 @@ def main(year: int, round_number: int, playback_speed: float = 1.0) -> None:
         drivers=drivers,
         playback_speed=playback_speed,
         driver_colors=driver_colors,
-        title=f"{session.event['EventName']} - Race"
+        title=f"{session.event['EventName']} - Race",
+        final_order=final_order or None,   # pass None if empty
     )
 
 

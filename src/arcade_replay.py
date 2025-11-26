@@ -55,8 +55,16 @@ def build_track_from_example_lap(example_lap, track_width=200):
 
 
 class F1ReplayWindow(arcade.Window):
-    def __init__(self, frames, example_lap, drivers, title,
-                 playback_speed=1.0, driver_colors=None):
+    def __init__(
+        self,
+        frames,
+        example_lap,
+        drivers,
+        title,
+        playback_speed: float = 1.0,
+        driver_colors=None,
+        final_order=None,  # official classification (list of abbreviations)
+    ):
         # Resizable window so user can adjust mid-sim
         super().__init__(SCREEN_WIDTH, SCREEN_HEIGHT, title, resizable=True)
 
@@ -68,11 +76,20 @@ class F1ReplayWindow(arcade.Window):
         self.frame_index = 0
         self.paused = False
 
+        # Official race result (if available)
+        self.final_order = final_order or []
+        self.final_order_index = {code: i for i, code in enumerate(self.final_order)}
+
         # Music state
         self.music_sound = None
         self.music_player = None
         self.music_muted = False
         self.music_volume = 0.5  # default volume
+
+        # Timeline state (for mouse dragging)
+        self.timeline_margin_x = 80
+        self.timeline_y = 30
+        self.timeline_dragging = False
 
         # Build track geometry (world coordinates)
         (
@@ -110,7 +127,10 @@ class F1ReplayWindow(arcade.Window):
         if os.path.exists(music_path):
             try:
                 self.music_sound = arcade.Sound(music_path, streaming=True)
-                self.music_player = self.music_sound.play(volume=self.music_volume, loop=True)
+                self.music_player = self.music_sound.play(
+                    volume=self.music_volume,
+                    loop=True,
+                )
             except Exception as e:
                 print("Failed to play background music:", e)
 
@@ -155,8 +175,12 @@ class F1ReplayWindow(arcade.Window):
         self.ty = screen_cy - self.world_scale * world_cy
 
         # Update screen coordinates of track polylines
-        self.screen_inner_points = [self.world_to_screen(x, y) for x, y in self.world_inner_points]
-        self.screen_outer_points = [self.world_to_screen(x, y) for x, y in self.world_outer_points]
+        self.screen_inner_points = [
+            self.world_to_screen(x, y) for x, y in self.world_inner_points
+        ]
+        self.screen_outer_points = [
+            self.world_to_screen(x, y) for x, y in self.world_outer_points
+        ]
 
     def on_resize(self, width, height):
         """Called automatically by Arcade when window is resized."""
@@ -169,10 +193,23 @@ class F1ReplayWindow(arcade.Window):
         sy = self.world_scale * y + self.ty
         return sx, sy
 
+    def _seek_from_x(self, x: float):
+        """Convert a mouse X on the timeline into a frame_index."""
+        left = self.timeline_margin_x
+        right = self.width - self.timeline_margin_x
+        x = max(left, min(right, x))
+
+        if self.n_frames > 1:
+            progress = (x - left) / (right - left)
+        else:
+            progress = 0.0
+
+        self.frame_index = int(progress * (self.n_frames - 1))
+
     def draw_timeline(self, frame):
-        """Draw a simple race progress bar at the bottom."""
-        margin_x = 80
-        bar_y = 30
+        """Draw a simple race progress bar at the bottom (mouse-draggable)."""
+        margin_x = self.timeline_margin_x
+        bar_y = self.timeline_y
         bar_height = 6
 
         # Background line
@@ -200,7 +237,7 @@ class F1ReplayWindow(arcade.Window):
         arcade.draw_text(
             f"Speed: {speed_text}",
             margin_x,
-            bar_y + 14,
+            bar_y + 16,
             arcade.color.LIGHT_GRAY,
             12,
         )
@@ -218,7 +255,7 @@ class F1ReplayWindow(arcade.Window):
                 texture=self.bg_texture,
             )
 
-        # 2. Track (using pre-calculated screen points)
+        # 2. Track
         track_color = (150, 150, 150)
         if len(self.screen_inner_points) > 1:
             arcade.draw_line_strip(self.screen_inner_points, track_color, 4)
@@ -234,10 +271,6 @@ class F1ReplayWindow(arcade.Window):
         # 3. Cars
         frame = self.frames[self.frame_index]
         for code, pos in frame["drivers"].items():
-            # rel_dist == 1 used here to indicate car is out / finished
-            if pos.get("rel_dist", 0) == 1:
-                continue
-
             sx, sy = self.world_to_screen(pos["x"], pos["y"])
             color = self.driver_colors.get(code, arcade.color.WHITE)
 
@@ -246,7 +279,7 @@ class F1ReplayWindow(arcade.Window):
             # Inner body with team color
             arcade.draw_circle_filled(sx, sy, 6, color)
 
-            # Tiny driver code label
+            # Driver code text
             arcade.draw_text(
                 code,
                 sx + 10,
@@ -259,7 +292,7 @@ class F1ReplayWindow(arcade.Window):
 
         # --- UI ELEMENTS (HUD, Leaderboard, Controls, Timeline) ---
 
-        # Leader info (correct logic: lap, then distance)
+        # Live leader (still based on lap/dist)
         leader_code = max(
             frame["drivers"],
             key=lambda c: (
@@ -287,7 +320,7 @@ class F1ReplayWindow(arcade.Window):
             right=hud_bg_x + hud_bg_width / 2,
             bottom=hud_bg_y - hud_bg_height / 2,
             top=hud_bg_y + hud_bg_height / 2,
-            color=(10, 10, 20, 210),  # semi-transparent dark
+            color=(10, 10, 20, 210),
         )
 
         arcade.draw_text(
@@ -334,20 +367,34 @@ class F1ReplayWindow(arcade.Window):
             color = self.driver_colors.get(code, arcade.color.WHITE)
             driver_list.append((code, color, pos))
 
-        # Sort by (lap, dist) so final order is correct
-        driver_list.sort(
-            key=lambda x: (
-                x[2].get("lap", 1),
-                x[2].get("dist", 0),
-            ),
-            reverse=True,
-        )
+        # 🔁 Decide ordering mode:
+        # - For most of the race: live ordering (lap, dist)
+        # - In the last ~1% of frames: freeze to official final_order (if available)
+        near_end = self.n_frames > 0 and self.frame_index >= self.n_frames * 0.99
+
+        if self.final_order and near_end:
+            # Use official race result so winner stays P1
+            driver_list.sort(
+                key=lambda x: self.final_order_index.get(
+                    x[0], len(self.final_order)
+                )
+            )
+        else:
+            # Live ordering during the race
+            driver_list.sort(
+                key=lambda x: (
+                    x[2].get("lap", 1),
+                    x[2].get("dist", 0),
+                ),
+                reverse=True,
+            )
 
         row_y = panel_y + panel_height / 2 - 60
         row_height = 22
 
         for i, (code, color, pos) in enumerate(driver_list):
             current_pos = i + 1
+            # basic OUT label if rel_dist==1
             if pos.get("rel_dist", 0) == 1:
                 text = f"{current_pos:>2}. {code}   OUT"
             else:
@@ -365,7 +412,7 @@ class F1ReplayWindow(arcade.Window):
         legend_width = 360
         legend_height = 130
         legend_x = 20 + legend_width / 2
-        legend_y = 70
+        legend_y = 90  # slightly higher than timeline
 
         arcade.draw_lrbt_rectangle_filled(
             left=legend_x - legend_width / 2,
@@ -430,7 +477,6 @@ class F1ReplayWindow(arcade.Window):
             # Toggle mute/unmute music
             if self.music_sound is not None:
                 if not self.music_muted:
-                    # Mute: pause player if exists
                     if self.music_player:
                         try:
                             self.music_player.pause()
@@ -438,15 +484,31 @@ class F1ReplayWindow(arcade.Window):
                             pass
                     self.music_muted = True
                 else:
-                    # Unmute: restart playback (looping)
                     try:
                         self.music_player = self.music_sound.play(
                             volume=self.music_volume,
-                            loop=True
+                            loop=True,
                         )
                         self.music_muted = False
                     except Exception as e:
                         print("Failed to resume music:", e)
+
+    # === Mouse handling for draggable timeline ===
+    def on_mouse_press(self, x, y, button, modifiers):
+        if button == arcade.MOUSE_BUTTON_LEFT:
+            # Check if click is near the timeline bar
+            if abs(y - self.timeline_y) <= 15 and \
+               self.timeline_margin_x <= x <= self.width - self.timeline_margin_x:
+                self._seek_from_x(x)
+                self.timeline_dragging = True
+
+    def on_mouse_release(self, x, y, button, modifiers):
+        if button == arcade.MOUSE_BUTTON_LEFT:
+            self.timeline_dragging = False
+
+    def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+        if self.timeline_dragging:
+            self._seek_from_x(x)
 
     def on_close(self):
         # Stop music cleanly when window closes
@@ -458,8 +520,15 @@ class F1ReplayWindow(arcade.Window):
         super().on_close()
 
 
-def run_arcade_replay(frames, example_lap, drivers, title,
-                      playback_speed=1.0, driver_colors=None):
+def run_arcade_replay(
+    frames,
+    example_lap,
+    drivers,
+    title,
+    playback_speed: float = 1.0,
+    driver_colors=None,
+    final_order=None,
+):
     """Convenience function to run the F1 replay window."""
     window = F1ReplayWindow(
         frames=frames,
@@ -468,5 +537,6 @@ def run_arcade_replay(frames, example_lap, drivers, title,
         playback_speed=playback_speed,
         driver_colors=driver_colors,
         title=title,
+        final_order=final_order,
     )
     arcade.run()
